@@ -1,0 +1,7 @@
+[
+  {"q":"What documents are required for a personal loan?","a":"Typically a government ID and last 2 payslips. This can be configured per-tenant in Documents config."},
+  {"q":"How do I enable e-sign?","a":"Toggle the 'portal.esign' feature flag in Tenant Admin > Feature Flags."},
+  {"q":"Where are uploaded files stored?","a":"In S3-compatible storage (MinIO locally). Use /api/files/presign to upload via presigned URL."},
+  {"q":"How does pricing work?","a":"Rate cards define base APR plus deltas by score tiers; configured per tenant in Pricing."},
+  {"q":"Can I integrate KYC later?","a":"Yes. Start with mock KYC; swap provider via Tenant Admin > Providers in production."}
+]

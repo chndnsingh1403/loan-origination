@@ -1,0 +1,127 @@
+
+services:
+  web-admin:
+    build:
+      context: ./apps/web-admin
+      dockerfile: Dockerfile
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_URL=http://localhost:8080
+    volumes:
+      - ./apps/web-admin:/app
+      - /app/node_modules
+    depends_on:
+      - bff
+
+  web-tenant-admin:
+    build:
+      context: ./apps/web-tenant-admin
+      dockerfile: Dockerfile
+    ports:
+      - "5174:5173"
+    environment:
+      - VITE_API_URL=http://localhost:8080
+    volumes:
+      - ./apps/web-tenant-admin:/app
+      - /app/node_modules
+    depends_on:
+      - bff
+
+  web-underwriter:
+    build:
+      context: ./apps/web-underwriter
+      dockerfile: Dockerfile
+    ports:
+      - "5175:5173"
+    environment:
+      - VITE_API_URL=http://localhost:8080
+    volumes:
+      - ./apps/web-underwriter:/app
+      - /app/node_modules
+    depends_on:
+      - bff
+
+  web-broker:
+    build:
+      context: ./apps/web-broker
+      dockerfile: Dockerfile
+    ports:
+      - "5176:5173"
+    environment:
+      - VITE_API_URL=http://localhost:8080
+    volumes:
+      - ./apps/web-broker:/app
+      - /app/node_modules
+    depends_on:
+      - bff
+
+  bff:
+    build:
+      context: ./apps/bff
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=originate
+      - POSTGRES_USER=appuser
+      - POSTGRES_PASSWORD=apppass
+      - MINIO_ENDPOINT=minio
+      - MINIO_PORT=9000
+      - MINIO_USE_SSL=false
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+      - MINIO_BUCKET=originate-docs
+      - AWS_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - SQS_ENDPOINT=http://localstack:4566
+      - SQS_QUEUE_URL=http://localstack:4566/000000000000/originate-events
+    volumes:
+      - ./apps/bff:/app
+      - /app/node_modules
+    depends_on:
+      - postgres
+      - minio
+      - localstack
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: appuser
+      POSTGRES_PASSWORD: apppass
+      POSTGRES_DB: originate
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  minio:
+    image: minio/minio:latest
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - miniodata:/data
+
+  localstack:
+    image: localstack/localstack:2.3
+    environment:
+      - SERVICES=sqs
+      - EDGE_PORT=4566
+      - AWS_DEFAULT_REGION=us-east-1
+    ports:
+      - "4566:4566"
+    volumes:
+      - localstack:/var/lib/localstack
+
+volumes:
+  pgdata:
+  miniodata:
+  localstack:
