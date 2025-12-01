@@ -21,7 +21,7 @@ services:
     ports:
       - "5174:5173"
     environment:
-      - VITE_API_URL=http://localhost:8080
+      - VITE_API_URL=http://127.0.0.1:8080
     volumes:
       - ./apps/web-tenant-admin:/app
       - /app/node_modules
@@ -35,7 +35,7 @@ services:
     ports:
       - "5175:5173"
     environment:
-      - VITE_API_URL=http://localhost:8080
+      - VITE_API_URL=http://127.0.0.1:8080
     volumes:
       - ./apps/web-underwriter:/app
       - /app/node_modules
@@ -49,7 +49,7 @@ services:
     ports:
       - "5176:5173"
     environment:
-      - VITE_API_URL=http://localhost:8080
+      - VITE_API_URL=http://127.0.0.1:8080
     volumes:
       - ./apps/web-broker:/app
       - /app/node_modules
@@ -63,11 +63,19 @@ services:
     ports:
       - "8080:8080"
     environment:
-      - POSTGRES_HOST=postgres
-      - POSTGRES_PORT=5432
-      - POSTGRES_DB=originate
-      - POSTGRES_USER=appuser
-      - POSTGRES_PASSWORD=apppass
+      - NODE_ENV=development
+      - DATABASE_URL=postgresql://appuser:apppass@postgres:5432/originate
+      - DATABASE_HOST=postgres
+      - DATABASE_PORT=5432
+      - DATABASE_NAME=originate
+      - DATABASE_USER=appuser
+      - DATABASE_PASSWORD=apppass
+      - DATABASE_SSL=false
+      - PORT=8080
+      - JWT_SECRET=your-super-secret-jwt-key-that-should-be-at-least-32-characters-long
+      - SESSION_SECRET=your-super-secret-session-key-that-should-be-at-least-32-characters
+      - ENCRYPTION_KEY=your-super-secret-encryption-key-32-chars
+      - CORS_ORIGIN=http://localhost:5173,http://localhost:5174,http://localhost:5175,http://localhost:5176,http://127.0.0.1:5173,http://127.0.0.1:5174,http://127.0.0.1:5175,http://127.0.0.1:5176,http://172.27.128.1:5173,http://172.27.128.1:5174,http://172.27.128.1:5175,http://172.27.128.1:5176
       - MINIO_ENDPOINT=minio
       - MINIO_PORT=9000
       - MINIO_USE_SSL=false
@@ -86,6 +94,7 @@ services:
       - postgres
       - minio
       - localstack
+      - db-init
 
   postgres:
     image: postgres:16-alpine
@@ -97,6 +106,26 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+
+  db-init:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: originate
+      POSTGRES_USER: appuser
+      POSTGRES_PASSWORD: apppass
+    volumes:
+      - ./database:/scripts
+    working_dir: /scripts
+    command: sh -c "
+      echo 'Waiting for PostgreSQL to be ready...' &&
+      while ! pg_isready -h postgres -p 5432 -U appuser; do sleep 2; done &&
+      echo 'PostgreSQL is ready! Running schema...' &&
+      PGPASSWORD=apppass psql -h postgres -p 5432 -U appuser -d originate -f schema.sql &&
+      echo 'Database initialized successfully!'"
+    depends_on:
+      - postgres
 
   minio:
     image: minio/minio:latest
@@ -121,7 +150,22 @@ services:
     volumes:
       - localstack:/var/lib/localstack
 
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@example.com
+      PGADMIN_DEFAULT_PASSWORD: admin123
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: 'False'
+    ports:
+      - "5050:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      - postgres
+
 volumes:
   pgdata:
   miniodata:
   localstack:
+  pgadmin_data:

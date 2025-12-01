@@ -1,8 +1,23 @@
 import React from 'react'
-const API = import.meta.env.VITE_API_URL || 'http://localhost:8080'
+import { authenticatedFetch } from '../utils/auth'
 type Lead = { id:string, customer:string, product:string, status:string, created:string }
 export const Leads:React.FC=()=>{ const [items,setItems]=React.useState<Lead[]>([]); const [q,setQ]=React.useState('')
-React.useEffect(()=>{ const url = new URL('/api/broker/leads', API); url.searchParams.set('q', q); fetch(url.toString()).then(r=>r.json()).then(d=>setItems(d.items)) },[q])
+React.useEffect(()=>{ 
+  const fetchLeads = async () => {
+    try {
+      const url = `/api/broker/leads${q ? `?q=${encodeURIComponent(q)}` : ''}`;
+      const response = await authenticatedFetch(url);
+      if (response.ok) {
+        const data = await response.json();
+        setItems(data.items || []);
+      }
+    } catch (error) {
+      console.error('Error fetching leads:', error);
+      setItems([]);
+    }
+  };
+  fetchLeads();
+},[q])
 return (<div className="p-6 space-y-4">
   <div className="text-lg font-semibold">Leads</div>
   <div className="card p-4 grid grid-cols-1 md:grid-cols-3 gap-3">

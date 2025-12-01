@@ -1,8 +1,22 @@
 import React from 'react'
-const API = import.meta.env.VITE_API_URL || 'http://localhost:8080'
-type Offer = { id:string, customer:string, product:string, apr:number, status:string }
+import { authenticatedFetch } from '../utils/auth'
+type Offer = { id:string, customer:string, product:string, amount:number, rate:number, created:string }
 export const Offers:React.FC=()=>{ const [items,setItems]=React.useState<Offer[]>([])
-React.useEffect(()=>{ fetch(API+'/api/broker/offers').then(r=>r.json()).then(d=>setItems(d.items)) },[])
+React.useEffect(()=>{ 
+  const fetchOffers = async () => {
+    try {
+      const response = await authenticatedFetch('/api/broker/offers');
+      if (response.ok) {
+        const data = await response.json();
+        setItems(data.items || []);
+      }
+    } catch (error) {
+      console.error('Error fetching offers:', error);
+      setItems([]);
+    }
+  };
+  fetchOffers();
+},[])
 return (<div className="p-6 space-y-4">
   <div className="text-lg font-semibold">Offers</div>
   <div className="card"><div className="p-3 border-b font-medium">({items.length})</div>
