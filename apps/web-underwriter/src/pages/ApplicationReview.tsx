@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { authenticatedFetch } from '../utils/auth'
 import { useParams, useNavigate } from 'react-router-dom'
+import { CheckCircle, Clock, AlertCircle, PlayCircle } from 'lucide-react'
 
 type Application = {
   id: string
@@ -35,12 +36,26 @@ type Note = {
   is_internal: boolean
 }
 
+type Task = {
+  id: string
+  name: string
+  description: string
+  task_type: string
+  status: string
+  sequence_order: number
+  is_required: boolean
+  created_at: string
+  started_at?: string
+  completed_at?: string
+}
+
 export const ApplicationReview: React.FC = () => {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const [application, setApplication] = useState<Application | null>(null)
   const [riskMetrics, setRiskMetrics] = useState<RiskMetrics | null>(null)
   const [notes, setNotes] = useState<Note[]>([])
+  const [tasks, setTasks] = useState<Task[]>([])
   const [loading, setLoading] = useState(true)
   const [showDecisionModal, setShowDecisionModal] = useState(false)
   const [decisionType, setDecisionType] = useState<'approve' | 'decline' | 'counter' | 'request_info'>('approve')
@@ -59,10 +74,11 @@ export const ApplicationReview: React.FC = () => {
 
   const fetchApplicationData = async () => {
     try {
-      const [appRes, riskRes, notesRes] = await Promise.all([
+      const [appRes, riskRes, notesRes, tasksRes] = await Promise.all([
         authenticatedFetch(`/api/underwriter/applications/${id}`),
         authenticatedFetch(`/api/underwriter/applications/${id}/risk`),
-        authenticatedFetch(`/api/underwriter/applications/${id}/notes`)
+        authenticatedFetch(`/api/underwriter/applications/${id}/notes`),
+        authenticatedFetch(`/api/applications/${id}/tasks`)
       ])
 
       if (appRes.ok) {
@@ -74,6 +90,9 @@ export const ApplicationReview: React.FC = () => {
       if (notesRes.ok) {
         const data = await notesRes.json()
         setNotes(data.items || [])
+      }
+      if (tasksRes.ok) {
+        setTasks(await tasksRes.json())
       }
     } catch (error) {
       console.error('Error fetching application:', error)
@@ -141,6 +160,46 @@ export const ApplicationReview: React.FC = () => {
       }
     } catch (error) {
       console.error('Error adding note:', error)
+    }
+  }
+
+  const updateTaskStatus = async (taskId: string, status: string) => {
+    try {
+      const response = await authenticatedFetch(`/api/tasks/${taskId}/status`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status })
+      })
+      
+      if (response.ok) {
+        fetchApplicationData()
+      }
+    } catch (error) {
+      console.error('Error updating task status:', error)
+    }
+  }
+
+  const getStatusIcon = (status: string) => {
+    switch (status) {
+      case 'completed':
+        return <CheckCircle className="w-4 h-4 text-green-600" />
+      case 'in_progress':
+        return <PlayCircle className="w-4 h-4 text-blue-600" />
+      case 'blocked':
+        return <AlertCircle className="w-4 h-4 text-red-600" />
+      default:
+        return <Clock className="w-4 h-4 text-gray-400" />
+    }
+  }
+
+  const getStatusColor = (status: string) => {
+    switch (status) {
+      case 'pending': return 'bg-gray-100 text-gray-800'
+      case 'in_progress': return 'bg-blue-100 text-blue-800'
+      case 'completed': return 'bg-green-100 text-green-800'
+      case 'blocked': return 'bg-red-100 text-red-800'
+      case 'skipped': return 'bg-yellow-100 text-yellow-800'
+      default: return 'bg-gray-100 text-gray-800'
     }
   }
 
@@ -319,6 +378,67 @@ export const ApplicationReview: React.FC = () => {
             }`}>
               {application.status}
             </span>
+          </div>
+
+          {/* Tasks */}
+          <div className="bg-white rounded-xl shadow-md p-6">
+            <h3 className="font-semibold mb-3 flex items-center gap-2">
+              <span>✅</span> Tasks ({tasks.filter(t => t.status === 'completed').length}/{tasks.length})
+            </h3>
+            <div className="space-y-2 max-h-80 overflow-y-auto">
+              {tasks.length === 0 ? (
+                <div className="text-sm text-gray-500">No tasks for this application</div>
+              ) : (
+                tasks.map((task) => (
+                  <div key={task.id} className="border rounded-lg p-3 hover:bg-gray-50">
+                    <div className="flex items-start justify-between gap-2 mb-2">
+                      <div className="flex items-center gap-2 flex-1">
+                        {getStatusIcon(task.status)}
+                        <div>
+                          <div className="text-sm font-medium">{task.name}</div>
+                          {task.description && (
+                            <div className="text-xs text-gray-500">{task.description}</div>
+                          )}
+                        </div>
+                      </div>
+                      {task.is_required && (
+                        <span className="text-xs bg-red-100 text-red-800 px-2 py-0.5 rounded-full">Required</span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className={`px-2 py-0.5 text-xs rounded-full ${getStatusColor(task.status)}`}>
+                        {task.status.replace('_', ' ')}
+                      </span>
+                      <div className="flex-1"></div>
+                      {task.status === 'pending' && (
+                        <button
+                          onClick={() => updateTaskStatus(task.id, 'in_progress')}
+                          className="text-xs px-2 py-1 bg-blue-600 text-white rounded hover:bg-blue-700"
+                        >
+                          Start
+                        </button>
+                      )}
+                      {task.status === 'in_progress' && (
+                        <>
+                          <button
+                            onClick={() => updateTaskStatus(task.id, 'completed')}
+                            className="text-xs px-2 py-1 bg-green-600 text-white rounded hover:bg-green-700"
+                          >
+                            Complete
+                          </button>
+                          <button
+                            onClick={() => updateTaskStatus(task.id, 'blocked')}
+                            className="text-xs px-2 py-1 bg-red-600 text-white rounded hover:bg-red-700"
+                          >
+                            Block
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
           </div>
 
           {/* Notes */}

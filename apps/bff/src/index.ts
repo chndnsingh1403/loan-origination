@@ -1519,7 +1519,40 @@ app.post("/api/broker/applications", authenticate, authorize('broker', 'admin'),
       ]
     )
 
-    res.status(201).json(result.rows[0])
+    const application = result.rows[0]
+
+    // Auto-generate tasks from task_setups for this loan product
+    const taskSetups = await query(
+      `SELECT * FROM task_setups 
+       WHERE loan_product_id = $1 AND is_active = true 
+       ORDER BY sequence_order ASC`,
+      [loan_product_id]
+    )
+
+    if (taskSetups.rows.length > 0) {
+      for (const taskSetup of taskSetups.rows) {
+        await query(
+          `INSERT INTO application_tasks (
+            application_id, task_setup_id, name, description, task_type,
+            assigned_role, status, sequence_order, is_required,
+            created_at, updated_at
+          )
+           VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8, NOW(), NOW())`,
+          [
+            application.id,
+            taskSetup.id,
+            taskSetup.name,
+            taskSetup.description,
+            taskSetup.task_type,
+            taskSetup.assigned_role,
+            taskSetup.sequence_order,
+            taskSetup.is_required
+          ]
+        )
+      }
+    }
+
+    res.status(201).json(application)
   } catch (error) {
     console.error('Error creating application:', error)
     console.error('Error details:', {
@@ -2908,6 +2941,167 @@ app.delete("/api/task-setups/:id", authenticate, authorize('tenant_admin', 'admi
   } catch (error) {
     console.error('Error deleting task setup:', error)
     res.status(500).json({ error: 'Failed to delete task setup' })
+  }
+})
+
+// =============== APPLICATION TASKS ENDPOINTS (Underwriter) ===============
+
+// Get all tasks for underwriter (assigned to their role)
+app.get("/api/underwriter/tasks", authenticate, authorize('underwriter', 'admin'), async (req, res) => {
+  try {
+    const { status, application_id } = req.query
+    
+    let queryText = `
+      SELECT 
+        t.*,
+        a.application_number,
+        a.status as application_status,
+        a.requested_amount,
+        a.applicant_data,
+        lp.name as product_name,
+        lp.product_type
+      FROM application_tasks t
+      JOIN applications a ON t.application_id = a.id
+      JOIN loan_products lp ON a.loan_product_id = lp.id
+      WHERE a.organization_id = $1 AND t.assigned_role = 'underwriter'
+    `
+    const params = [req.organization_id]
+    let paramCount = 1
+
+    if (status) {
+      paramCount++
+      queryText += ` AND t.status = $${paramCount}`
+      params.push(status as string)
+    }
+
+    if (application_id) {
+      paramCount++
+      queryText += ` AND t.application_id = $${paramCount}`
+      params.push(application_id as string)
+    }
+
+    queryText += ' ORDER BY t.sequence_order ASC, t.created_at DESC'
+
+    const result = await query(queryText, params)
+    res.json(result.rows)
+  } catch (error) {
+    console.error('Error fetching underwriter tasks:', error)
+    res.status(500).json({ error: 'Failed to fetch tasks' })
+  }
+})
+
+// Get tasks for a specific application
+app.get("/api/applications/:id/tasks", authenticate, async (req, res) => {
+  try {
+    const { id } = req.params
+    
+    // Verify access to application
+    const appResult = await query(
+      'SELECT id FROM applications WHERE id = $1 AND organization_id = $2',
+      [id, req.organization_id]
+    )
+    
+    if (appResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Application not found' })
+    }
+
+    const result = await query(
+      `SELECT t.*, u.first_name, u.last_name 
+       FROM application_tasks t
+       LEFT JOIN users u ON t.assigned_user_id = u.id
+       WHERE t.application_id = $1
+       ORDER BY t.sequence_order ASC`,
+      [id]
+    )
+    
+    res.json(result.rows)
+  } catch (error) {
+    console.error('Error fetching application tasks:', error)
+    res.status(500).json({ error: 'Failed to fetch tasks' })
+  }
+})
+
+// Update task status
+app.patch("/api/tasks/:id/status", authenticate, async (req, res) => {
+  try {
+    const { id } = req.params
+    const { status, completion_notes } = req.body
+
+    if (!['pending', 'in_progress', 'completed', 'skipped', 'blocked'].includes(status)) {
+      return res.status(400).json({ error: 'Invalid status' })
+    }
+
+    // Verify task belongs to user's organization
+    const taskCheck = await query(
+      `SELECT t.id FROM application_tasks t
+       JOIN applications a ON t.application_id = a.id
+       WHERE t.id = $1 AND a.organization_id = $2`,
+      [id, req.organization_id]
+    )
+
+    if (taskCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Task not found' })
+    }
+
+    const updateFields = ['status = $1', 'updated_at = NOW()']
+    const params = [status, id]
+    let paramCount = 2
+
+    if (status === 'in_progress') {
+      updateFields.push('started_at = COALESCE(started_at, NOW())')
+    }
+
+    if (status === 'completed') {
+      paramCount++
+      updateFields.push(`completed_at = NOW()`)
+      updateFields.push(`completed_by_user_id = $${paramCount}`)
+      params.splice(paramCount - 1, 0, req.user?.id)
+
+      if (completion_notes) {
+        paramCount++
+        updateFields.push(`completion_notes = $${paramCount}`)
+        params.splice(paramCount - 1, 0, completion_notes)
+      }
+    }
+
+    const result = await query(
+      `UPDATE application_tasks 
+       SET ${updateFields.join(', ')}
+       WHERE id = $${paramCount + 1}
+       RETURNING *`,
+      params
+    )
+
+    res.json(result.rows[0])
+  } catch (error) {
+    console.error('Error updating task status:', error)
+    res.status(500).json({ error: 'Failed to update task' })
+  }
+})
+
+// Assign task to specific user
+app.patch("/api/tasks/:id/assign", authenticate, authorize('underwriter', 'tenant_admin', 'admin'), async (req, res) => {
+  try {
+    const { id } = req.params
+    const { assigned_user_id } = req.body
+
+    const result = await query(
+      `UPDATE application_tasks t
+       SET assigned_user_id = $1, updated_at = NOW()
+       FROM applications a
+       WHERE t.id = $2 AND t.application_id = a.id AND a.organization_id = $3
+       RETURNING t.*`,
+      [assigned_user_id, id, req.organization_id]
+    )
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Task not found' })
+    }
+
+    res.json(result.rows[0])
+  } catch (error) {
+    console.error('Error assigning task:', error)
+    res.status(500).json({ error: 'Failed to assign task' })
   }
 })
 

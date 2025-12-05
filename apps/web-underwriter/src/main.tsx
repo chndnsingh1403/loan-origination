@@ -4,6 +4,7 @@ import { BrowserRouter, Routes, Route, Navigate, NavLink } from 'react-router-do
 import './index.css'
 import { Dashboard } from './pages/Dashboard'
 import { Queue } from './pages/Queue'
+import { Tasks } from './pages/Tasks'
 import { Applications } from './pages/Applications'
 import { ApplicationReview } from './pages/ApplicationReview'
 import { Decisioning } from './pages/Decisioning'
@@ -52,6 +53,7 @@ function Shell(){
         <nav className="p-2 space-y-1 flex-1 overflow-y-auto">
           <NavLink to="/dashboard" className={({isActive})=>`block px-3 py-2 rounded-md ${isActive?'bg-gray-100 dark:bg-gray-700':'dark:text-gray-300 dark:hover:bg-gray-700'}`}>📊 Dashboard</NavLink>
           <NavLink to="/queue" className={({isActive})=>`block px-3 py-2 rounded-md ${isActive?'bg-gray-100 dark:bg-gray-700':'dark:text-gray-300 dark:hover:bg-gray-700'}`}>📋 Queue</NavLink>
+          <NavLink to="/tasks" className={({isActive})=>`block px-3 py-2 rounded-md ${isActive?'bg-gray-100 dark:bg-gray-700':'dark:text-gray-300 dark:hover:bg-gray-700'}`}>✅ Tasks</NavLink>
           <NavLink to="/applications" className={({isActive})=>`block px-3 py-2 rounded-md ${isActive?'bg-gray-100 dark:bg-gray-700':'dark:text-gray-300 dark:hover:bg-gray-700'}`}>📄 Applications</NavLink>
           <NavLink to="/decisioning" className={({isActive})=>`block px-3 py-2 rounded-md ${isActive?'bg-gray-100 dark:bg-gray-700':'dark:text-gray-300 dark:hover:bg-gray-700'}`}>⚖️ Decisioning</NavLink>
         </nav>
@@ -70,6 +72,7 @@ function Shell(){
           <Route path="/" element={<Navigate to="/dashboard" replace/>} />
           <Route path="/dashboard" element={<Dashboard/>} />
           <Route path="/queue" element={<Queue/>} />
+          <Route path="/tasks" element={<Tasks/>} />
           <Route path="/applications" element={<Applications/>} />
           <Route path="/application/:id" element={<ApplicationReview/>} />
           <Route path="/decisioning" element={<Decisioning/>} />
