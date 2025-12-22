@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { authenticatedFetch } from '../utils/auth'
 import { useParams, useNavigate } from 'react-router-dom'
 import { CheckCircle, Clock, AlertCircle, PlayCircle } from 'lucide-react'
+import EnrichmentHistory from '../components/EnrichmentHistory'
 
 type Application = {
   id: string
@@ -346,6 +347,14 @@ export const ApplicationReview: React.FC = () => {
               <div><span className="font-medium">Student Loans:</span> ${Number(applicantData.student_loans || 0).toLocaleString()}</div>
               <div><span className="font-medium">Other Debts:</span> ${Number(applicantData.other_debts || 0).toLocaleString()}</div>
             </div>
+          </div>
+
+          {/* Data Enrichment History */}
+          <div className="bg-white rounded-xl shadow-md p-6">
+            <h2 className="text-xl font-semibold mb-4 flex items-center gap-2">
+              <span>🔍</span> Data Enrichment History
+            </h2>
+            <EnrichmentHistory applicationId={id || ''} />
           </div>
 
           {/* Loan Details */}

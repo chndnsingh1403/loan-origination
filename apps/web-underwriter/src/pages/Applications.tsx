@@ -117,7 +117,7 @@ export const Applications: React.FC = () => {
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
               {applications.map((app) => (
-                <tr key={app.id} className="hover:bg-gray-50 cursor-pointer" onClick={() => navigate(`/application/${app.id}`)}>
+                <tr key={app.id} className="hover:bg-gray-50 cursor-pointer" onClick={() => navigate(`/applications/${app.id}`)}>
                   <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-blue-600">{app.application_number}</td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{app.customer}</td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">{app.product}</td>

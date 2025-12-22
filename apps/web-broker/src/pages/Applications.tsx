@@ -193,7 +193,11 @@ export const Applications: React.FC = () => {
               </thead>
               <tbody className="divide-y divide-gray-200">
                 {items.map(app => (
-                  <tr key={app.id} className="hover:bg-blue-50 transition-colors">
+                  <tr 
+                    key={app.id} 
+                    className="hover:bg-blue-50 transition-colors cursor-pointer"
+                    onClick={() => navigate(`/applications/${app.id}`)}
+                  >
                     {visibleColumns.map(col => (
                       <td key={col.key} className="px-4 py-3 text-sm text-gray-900">
                         {col.key === 'status' ? (
@@ -214,14 +218,20 @@ export const Applications: React.FC = () => {
                     <td className="px-4 py-3 text-sm">
                       <div className="flex gap-2">
                         <button
-                          onClick={() => setEditingApp(app)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setEditingApp(app);
+                          }}
                           className="text-blue-600 hover:text-blue-800 font-medium"
                         >
                           Edit
                         </button>
                         {app.status === 'draft' && (
                           <button
-                            onClick={() => submitApplication(app.id)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              submitApplication(app.id);
+                            }}
                             className="px-3 py-1 bg-green-600 text-white text-xs rounded-lg hover:bg-green-700"
                           >
                             Submit

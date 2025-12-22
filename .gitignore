@@ -34,18 +34,14 @@ Thumbs.db
 # Playwright MCP
 .playwright-mcp/
 
-# Documentation (temporary files)
-*_SUMMARY.md
-*_GUIDE.md
-SESSION_MANAGEMENT.md
-FullPlan
-
-# Database temp files
-update_status.sql
-
 # Old backup files
-*-old.tsx
-*-Old.tsx
+*-old*
+*-Old*
+*-backup*
+*.bak
+
+# Planning documents
+FullPlan
 
 # Misc
 *.swp

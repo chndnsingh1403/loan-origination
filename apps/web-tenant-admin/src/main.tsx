@@ -5,12 +5,15 @@ import './index.css'
 import { Branding } from './pages/Branding'
 import { FeatureFlags } from './pages/FeatureFlags'
 import { WorkflowBuilder } from './pages/WorkflowBuilder'
+import { WorkflowManagement } from './pages/WorkflowManagement'
 import LoanProducts from './pages/LoanProducts'
 import { ApplicationTemplates } from './pages/ApplicationTemplates'
 import Users from './pages/Users'
 import { Queues } from './pages/Queues'
 import { TaskSetups } from './pages/TaskSetups'
 import RoleManagement from './pages/RoleManagement'
+import Integrations from './pages/Integrations'
+import { Notifications } from './pages/Notifications'
 import { ProtectedRoute } from './components/ProtectedRoute'
 import { getUserDisplayName, logout } from './utils/auth'
 
@@ -67,10 +70,15 @@ function Shell({children}:{children:React.ReactNode}){
           <NavLink to="/role-management" className={({isActive})=>`block px-3 py-2 rounded-md ${isActive?'bg-gray-100 dark:bg-gray-700':'dark:text-gray-300 dark:hover:bg-gray-700'}`}>Role Management</NavLink>
           <NavLink to="/queues" className={({isActive})=>`block px-3 py-2 rounded-md ${isActive?'bg-gray-100 dark:bg-gray-700':'dark:text-gray-300 dark:hover:bg-gray-700'}`}>Work Queues</NavLink>
           
+          <div className="px-3 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase mt-4">Automation</div>
+          <NavLink to="/workflows" className={({isActive})=>`block px-3 py-2 rounded-md ${isActive?'bg-gray-100 dark:bg-gray-700':'dark:text-gray-300 dark:hover:bg-gray-700'}`}>Workflow Management</NavLink>
+          <NavLink to="/workflow" className={({isActive})=>`block px-3 py-2 rounded-md ${isActive?'bg-gray-100 dark:bg-gray-700':'dark:text-gray-300 dark:hover:bg-gray-700'}`}>State Machine Builder</NavLink>
+          <NavLink to="/integrations" className={({isActive})=>`block px-3 py-2 rounded-md ${isActive?'bg-gray-100 dark:bg-gray-700':'dark:text-gray-300 dark:hover:bg-gray-700'}`}>Integrations</NavLink>
+          <NavLink to="/notifications" className={({isActive})=>`block px-3 py-2 rounded-md ${isActive?'bg-gray-100 dark:bg-gray-700':'dark:text-gray-300 dark:hover:bg-gray-700'}`}>Notifications</NavLink>
+          
           <div className="px-3 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase mt-4">Customization</div>
           <NavLink to="/branding" className={({isActive})=>`block px-3 py-2 rounded-md ${isActive?'bg-gray-100 dark:bg-gray-700':'dark:text-gray-300 dark:hover:bg-gray-700'}`}>Branding</NavLink>
           <NavLink to="/features" className={({isActive})=>`block px-3 py-2 rounded-md ${isActive?'bg-gray-100 dark:bg-gray-700':'dark:text-gray-300 dark:hover:bg-gray-700'}`}>Feature Flags</NavLink>
-          <NavLink to="/workflow" className={({isActive})=>`block px-3 py-2 rounded-md ${isActive?'bg-gray-100 dark:bg-gray-700':'dark:text-gray-300 dark:hover:bg-gray-700'}`}>Workflow Builder</NavLink>
         </nav>
         <div className="p-4 border-t bg-gray-50 dark:bg-gray-900 dark:border-gray-700">
           <div className="text-sm font-medium text-gray-900 dark:text-white">{getUserDisplayName()}</div>
@@ -101,7 +109,10 @@ function App(){
           <Route path="/queues" element={<Shell><Queues/></Shell>} />
           <Route path="/branding" element={<Shell><Branding/></Shell>} />
           <Route path="/features" element={<Shell><FeatureFlags/></Shell>} />
+          <Route path="/workflows" element={<Shell><WorkflowManagement/></Shell>} />
           <Route path="/workflow" element={<Shell><WorkflowBuilder/></Shell>} />
+          <Route path="/integrations" element={<Shell><Integrations/></Shell>} />
+          <Route path="/notifications" element={<Shell><Notifications/></Shell>} />
           <Route path="*" element={<div className="p-6">Not Found</div>} />
         </Routes>
       </ProtectedRoute>

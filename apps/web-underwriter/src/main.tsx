@@ -6,6 +6,7 @@ import { Dashboard } from './pages/Dashboard'
 import { Queue } from './pages/Queue'
 import { Tasks } from './pages/Tasks'
 import { Applications } from './pages/Applications'
+import ApplicationDashboard from './pages/ApplicationDashboard'
 import { ApplicationReview } from './pages/ApplicationReview'
 import { Decisioning } from './pages/Decisioning'
 import { ProtectedRoute } from './components/ProtectedRoute'
@@ -74,6 +75,7 @@ function Shell(){
           <Route path="/queue" element={<Queue/>} />
           <Route path="/tasks" element={<Tasks/>} />
           <Route path="/applications" element={<Applications/>} />
+          <Route path="/applications/:id" element={<ApplicationDashboard/>} />
           <Route path="/application/:id" element={<ApplicationReview/>} />
           <Route path="/decisioning" element={<Decisioning/>} />
           <Route path="*" element={<div className="p-6">Not Found</div>} />

@@ -4,6 +4,7 @@ import { BrowserRouter, Routes, Route, Navigate, NavLink } from 'react-router-do
 import './index.css'
 import { Pipeline } from './pages/Pipeline'
 import { Applications } from './pages/Applications'
+import ApplicationDashboard from './pages/ApplicationDashboard'
 import { NewApplication } from './pages/NewApplication'
 import { Customers } from './pages/Customers'
 import { Documents } from './pages/Documents'
@@ -86,6 +87,7 @@ function Shell(){
           <Route path="/" element={<Navigate to="/pipeline" replace/>} />
           <Route path="/pipeline" element={<Pipeline/>} />
           <Route path="/applications" element={<Applications/>} />
+          <Route path="/applications/:id" element={<ApplicationDashboard/>} />
           <Route path="/new-application" element={<NewApplication/>} />
           <Route path="/customers" element={<Customers/>} />
           <Route path="/documents" element={<Documents/>} />

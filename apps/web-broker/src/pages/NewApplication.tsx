@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { authenticatedFetch } from '../utils/auth'
 import { useNavigate } from 'react-router-dom'
+import EnrichedField from '../components/EnrichedField'
 
 type LoanProduct = {
   id: string
@@ -45,6 +46,7 @@ export const NewApplication: React.FC = () => {
   const [formData, setFormData] = useState<Record<string, any>>({})
   const [loading, setLoading] = useState(false)
   const [errors, setErrors] = useState<Record<string, string>>({})
+  const [enrichments, setEnrichments] = useState<any[]>([])
 
   useEffect(() => {
     fetchProducts()
@@ -250,6 +252,26 @@ export const NewApplication: React.FC = () => {
         )
       
       default:
+        // Check if this field has enrichment data
+        const fieldEnrichment = enrichments.find((e: any) => e.field_path === field.id)
+        
+        // Use EnrichedField if enrichment exists, otherwise regular input
+        if (fieldEnrichment) {
+          return (
+            <EnrichedField
+              label={field.label}
+              value={value || ''}
+              enrichment={{
+                source: fieldEnrichment.source,
+                confidence_score: fieldEnrichment.confidence_score,
+                enriched_at: fieldEnrichment.enriched_at
+              }}
+              type={field.type === 'email' ? 'email' : field.type === 'phone' ? 'tel' : 'text'}
+              readOnly={false}
+            />
+          )
+        }
+        
         return <input type="text" value={value} onChange={(e) => handleChange(e.target.value)} className={commonClasses} />
     }
   }

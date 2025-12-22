@@ -2,6 +2,10 @@ import express, { Request, Response } from 'express'
 import cors from 'cors'
 import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs'
 import * as Minio from 'minio'
+import crypto from 'crypto'
+import { Readable } from 'stream'
+
+// No file upload library needed - we'll handle multipart manually
 
 // Import configuration management
 import config, { EnvironmentUtils } from './config/environment.js'
@@ -57,6 +61,8 @@ const corsOptions = {
 
 app.use(cors(corsOptions))
 app.use(express.json({ limit: '10mb' }))
+// Raw body parsing for multipart (we'll handle file uploads manually in the endpoint)
+app.use(express.raw({ type: 'multipart/form-data', limit: '10mb' }))
 
 // Simple request logger for debugging
 app.use((req, res, next) => {
@@ -1568,6 +1574,51 @@ app.post("/api/broker/applications", authenticate, authorize('broker', 'admin'),
   }
 })
 
+// Get single application by ID
+app.get("/api/broker/applications/:id", authenticate, authorize('broker', 'admin'), async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const appResult = await query(
+      `SELECT a.*, lp.name as product_name, 
+              u1.first_name as broker_first_name, u1.last_name as broker_last_name
+       FROM applications a 
+       LEFT JOIN loan_products lp ON a.loan_product_id = lp.id
+       LEFT JOIN users u1 ON a.assigned_broker_id = u1.id
+       WHERE a.id = $1 AND a.organization_id = $2`,
+      [id, req.organization_id]
+    );
+
+    if (appResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Application not found' });
+    }
+
+    const app = appResult.rows[0];
+    const application = {
+      id: app.id,
+      application_number: app.application_number,
+      customer: `${(app.applicant_data?.first_name || 'Unknown')} ${(app.applicant_data?.last_name || '')}`,
+      product: app.product_name || 'No Product',
+      status: app.status,
+      stage: app.stage,
+      requested_amount: app.requested_amount,
+      requested_term_months: app.requested_term_months,
+      purpose: app.purpose,
+      approved_amount: app.approved_amount,
+      approved_rate: app.approved_rate,
+      broker: app.broker_first_name ? `${app.broker_first_name} ${app.broker_last_name}` : 'Unassigned',
+      created_at: app.created_at,
+      submitted_at: app.submitted_at,
+      applicant_data: app.applicant_data
+    };
+
+    res.json(application);
+  } catch (error) {
+    console.error('Error fetching application:', error);
+    res.status(500).json({ error: 'Failed to fetch application' });
+  }
+});
+
 // Submit application for underwriting
 app.post("/api/broker/applications/:id/submit", authenticate, authorize('broker', 'admin'), async (req, res) => {
   try {
@@ -1747,6 +1798,145 @@ app.get("/api/underwriter/applications", authenticate, authorize('underwriter', 
     res.status(500).json({ error: 'Failed to fetch applications' })
   }
 })
+
+// Get single application by ID for underwriter
+app.get("/api/underwriter/applications/:id", authenticate, authorize('underwriter', 'admin'), async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const appResult = await query(
+      `SELECT a.*, lp.name as product_name, 
+              u1.first_name as broker_first_name, u1.last_name as broker_last_name
+       FROM applications a 
+       LEFT JOIN loan_products lp ON a.loan_product_id = lp.id
+       LEFT JOIN users u1 ON a.assigned_broker_id = u1.id
+       WHERE a.id = $1 AND a.organization_id = $2`,
+      [id, req.organization_id]
+    );
+
+    if (appResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Application not found' });
+    }
+
+    const app = appResult.rows[0];
+    const application = {
+      id: app.id,
+      application_number: app.application_number,
+      customer: `${(app.applicant_data?.first_name || 'Unknown')} ${(app.applicant_data?.last_name || '')}`,
+      product: app.product_name || 'No Product',
+      status: app.status,
+      stage: app.stage,
+      requested_amount: app.requested_amount,
+      requested_term_months: app.requested_term_months,
+      purpose: app.purpose,
+      approved_amount: app.approved_amount,
+      approved_rate: app.approved_rate,
+      credit_score: app.applicant_data?.credit_score,
+      dti_ratio: app.applicant_data?.dti_ratio,
+      broker: app.broker_first_name ? `${app.broker_first_name} ${app.broker_last_name}` : 'Unassigned',
+      created_at: app.created_at,
+      submitted_at: app.submitted_at,
+      applicant_data: app.applicant_data
+    };
+
+    res.json(application);
+  } catch (error) {
+    console.error('Error fetching application:', error);
+    res.status(500).json({ error: 'Failed to fetch application' });
+  }
+});
+
+// Get decisions for an application
+app.get("/api/applications/:id/decisions", authenticate, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = (req as any).session?.userId;
+
+    // Verify access
+    const appCheck = await query(
+      `SELECT id FROM applications WHERE id = $1 AND organization_id IN (SELECT organization_id FROM users WHERE id = $2)`,
+      [id, userId]
+    );
+
+    if (appCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Application not found' });
+    }
+
+    // For now, return empty array - will be implemented when decision tracking is added
+    res.json({ decisions: [] });
+  } catch (error) {
+    console.error('Error fetching decisions:', error);
+    res.status(500).json({ error: 'Failed to fetch decisions' });
+  }
+});
+
+// Approve application
+app.post("/api/underwriter/applications/:id/approve", authenticate, authorize('underwriter', 'admin'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { approved_amount, approved_rate, notes } = req.body;
+    const userId = (req as any).session?.userId;
+
+    // Verify application exists and belongs to organization
+    const appCheck = await query(
+      `SELECT id, status FROM applications WHERE id = $1 AND organization_id = $2`,
+      [id, req.organization_id]
+    );
+
+    if (appCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Application not found' });
+    }
+
+    // Update application status
+    await query(
+      `UPDATE applications 
+       SET status = 'approved', 
+           approved_amount = $1, 
+           approved_rate = $2,
+           updated_at = NOW()
+       WHERE id = $3`,
+      [approved_amount, approved_rate, id]
+    );
+
+    res.json({ success: true, message: 'Application approved successfully' });
+  } catch (error) {
+    console.error('Error approving application:', error);
+    res.status(500).json({ error: 'Failed to approve application' });
+  }
+});
+
+// Reject application
+app.post("/api/underwriter/applications/:id/reject", authenticate, authorize('underwriter', 'admin'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body;
+    const userId = (req as any).session?.userId;
+
+    // Verify application exists
+    const appCheck = await query(
+      `SELECT id FROM applications WHERE id = $1 AND organization_id = $2`,
+      [id, req.organization_id]
+    );
+
+    if (appCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Application not found' });
+    }
+
+    // Update status
+    await query(
+      `UPDATE applications 
+       SET status = 'rejected', 
+           updated_at = NOW()
+       WHERE id = $1`,
+      [id]
+    );
+
+    res.json({ success: true, message: 'Application rejected' });
+  } catch (error) {
+    console.error('Error rejecting application:', error);
+    res.status(500).json({ error: 'Failed to reject application' });
+  }
+});
 
 // Dashboard stats
 app.get("/api/underwriter/dashboard/stats", authenticate, authorize('underwriter', 'admin'), async (req, res) => {
@@ -2046,6 +2236,80 @@ app.post("/api/underwriter/decision", authenticate, authorize('underwriter', 'ad
     res.status(500).json({ error: 'Failed to submit decision' })
   }
 })
+
+// =============== INTEGRATION RESULTS & ENRICHMENTS ===============
+
+// Get integration results for an application
+app.get("/api/applications/:id/integrations", authenticate, authorize('underwriter', 'admin'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { organization_id } = req.user!;
+
+    // Verify application belongs to organization
+    const appCheck = await query(`
+      SELECT id FROM applications WHERE id = $1 AND organization_id = $2
+    `, [id, organization_id]);
+
+    if (appCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Application not found' });
+    }
+
+    const result = await query(`
+      SELECT 
+        id,
+        provider,
+        status,
+        confidence_score,
+        executed_at,
+        error_message
+      FROM integration_results
+      WHERE application_id = $1
+      ORDER BY executed_at DESC
+    `, [id]);
+
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Error fetching integration results:', error);
+    res.status(500).json({ error: 'Failed to fetch integration results' });
+  }
+});
+
+// Get enrichment history for an application
+app.get("/api/applications/:id/enrichments", authenticate, authorize('underwriter', 'broker', 'admin'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { organization_id } = req.user!;
+
+    // Verify application belongs to organization
+    const appCheck = await query(`
+      SELECT id FROM applications WHERE id = $1 AND organization_id = $2
+    `, [id, organization_id]);
+
+    if (appCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Application not found' });
+    }
+
+    const result = await query(`
+      SELECT 
+        id,
+        source,
+        field_path,
+        old_value,
+        new_value,
+        confidence_score,
+        enriched_at,
+        enriched_by
+      FROM data_enrichments
+      WHERE application_id = $1
+      ORDER BY enriched_at DESC
+    `, [id]);
+
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Error fetching enrichments:', error);
+    res.status(500).json({ error: 'Failed to fetch enrichments' });
+  }
+});
 
 // =============== OPENAPI DOCUMENTATION ===============
 
@@ -3308,6 +3572,1183 @@ async function initializeApp() {
     
     // Initialize demo users
     await ensureDemoUsers();
+    
+    // ========================================
+    // ENRICHMENT ENDPOINTS
+    // ========================================
+    
+    // Get enrichment history for an application
+    app.get("/api/applications/:id/enrichments", authenticate, authorize('underwriter', 'broker', 'tenant_admin', 'admin'), async (req, res) => {
+      try {
+        const { id } = req.params;
+        
+        const enrichments = await query(`
+          SELECT 
+            id,
+            source,
+            field_path,
+            old_value,
+            new_value,
+            confidence_score,
+            enriched_at,
+            enriched_by
+          FROM data_enrichments
+          WHERE application_id = $1
+          ORDER BY enriched_at DESC
+        `, [id]);
+        
+        res.json(enrichments.rows);
+      } catch (error) {
+        console.error('Get enrichments error:', error);
+        res.status(500).json({ error: 'Failed to fetch enrichments' });
+      }
+    });
+    
+    // Webhook receiver from n8n for enrichment data
+    app.post("/api/webhooks/enrichment-data", async (req, res) => {
+      try {
+        const { application_id, source, enrichments } = req.body;
+        
+        if (!application_id || !source || !Array.isArray(enrichments)) {
+          return res.status(400).json({ error: 'Invalid payload' });
+        }
+        
+        // Get current application data
+        const app = await query(`SELECT form_data FROM loan_applications WHERE id = $1`, [application_id]);
+        if (app.rows.length === 0) {
+          return res.status(404).json({ error: 'Application not found' });
+        }
+        
+        for (const enrichment of enrichments) {
+          const { field, old, new: newValue, confidence } = enrichment;
+          
+          // Log enrichment
+          await query(`
+            INSERT INTO data_enrichments 
+            (application_id, source, field_path, old_value, new_value, confidence_score, enriched_by)
+            VALUES ($1, $2, $3, $4, $5, $6, 'system')
+          `, [application_id, source, field, JSON.stringify(old), JSON.stringify(newValue), confidence]);
+          
+          // Update application data
+          await query(`
+            UPDATE loan_applications
+            SET form_data = jsonb_set(
+              form_data,
+              $1::text[],
+              $2::jsonb
+            ),
+            updated_at = NOW()
+            WHERE id = $3
+          `, [field.split('.'), JSON.stringify(newValue), application_id]);
+        }
+        
+        res.json({ success: true, enriched_count: enrichments.length });
+      } catch (error) {
+        console.error('Enrichment webhook error:', error);
+        res.status(500).json({ error: 'Failed to process enrichments' });
+      }
+    });
+    
+    // TEST ENDPOINT: Simulate enrichment data (remove in production)
+    app.post("/api/test/enrich/:applicationId", authenticate, async (req, res) => {
+      try {
+        const { applicationId } = req.params;
+        const { source = 'experian', field_path, new_value, confidence_score = 95.0 } = req.body;
+        
+        // Get current value
+        const app = await query(`SELECT form_data FROM loan_applications WHERE id = $1`, [applicationId]);
+        if (app.rows.length === 0) {
+          return res.status(404).json({ error: 'Application not found' });
+        }
+        
+        // Extract old value from JSONB using field_path
+        const pathParts = field_path.split('.');
+        let oldValue = app.rows[0].form_data;
+        for (const part of pathParts) {
+          oldValue = oldValue?.[part];
+        }
+        
+        // Insert enrichment
+        await query(`
+          INSERT INTO data_enrichments 
+          (application_id, source, field_path, old_value, new_value, confidence_score, enriched_by)
+          VALUES ($1, $2, $3, $4, $5, $6, 'system')
+        `, [applicationId, source, field_path, JSON.stringify(oldValue), JSON.stringify(new_value), confidence_score]);
+        
+        // Update application data
+        await query(`
+          UPDATE loan_applications
+          SET form_data = jsonb_set(
+            form_data,
+            $1::text[],
+            $2::jsonb
+          ),
+          updated_at = NOW()
+          WHERE id = $3
+        `, [pathParts, JSON.stringify(new_value), applicationId]);
+        
+        res.json({ success: true, message: 'Enrichment applied' });
+      } catch (error) {
+        console.error('Test enrichment error:', error);
+        res.status(500).json({ error: 'Failed to apply enrichment' });
+      }
+    });
+
+    // ========================================
+    // PHASE 4: INTEGRATION CONFIGURATION UI
+    // ========================================
+
+    // Get available workflow templates (hardcoded for now, can be stored in DB later)
+    app.get("/api/workflow-templates", authenticate, authorize('tenant_admin', 'admin'), async (req, res) => {
+      try {
+        const templates = [
+          { 
+            id: 'mortgage-standard', 
+            name: 'Standard Mortgage', 
+            description: 'Full verification with appraisal, title search, and parallel credit/income checks', 
+            product_types: ['mortgage', 'refinance'],
+            estimated_duration: '3-5 days',
+            steps: ['Credit Check', 'Income Verification', 'Identity Check', 'Risk Calculation', 'Appraisal', 'Title Search', 'Manager Approval']
+          },
+          { 
+            id: 'auto-streamlined', 
+            name: 'Streamlined Auto Loan', 
+            description: 'Fast approval for qualified buyers with vehicle valuation', 
+            product_types: ['auto'],
+            estimated_duration: '1-2 days',
+            steps: ['Credit Check', 'Vehicle Valuation', 'Risk Assessment', 'Conditional Income Verification']
+          },
+          { 
+            id: 'personal-credit-union', 
+            name: 'Credit Union Personal Loan', 
+            description: 'Member-focused, relationship-based approval process', 
+            product_types: ['personal'],
+            estimated_duration: '1-3 days',
+            steps: ['Member Verification', 'Credit Check', 'Relationship Review', 'Decision']
+          },
+          { 
+            id: 'commercial-complex', 
+            name: 'Commercial Loan', 
+            description: 'Business loans with committee review and extensive analysis', 
+            product_types: ['commercial'],
+            estimated_duration: '7-14 days',
+            steps: ['Business Credit Check', 'Guarantor Check', 'Financial Analysis', 'Collateral Appraisal', 'Committee Review']
+          }
+        ];
+        res.json(templates);
+      } catch (error) {
+        console.error('Get workflow templates error:', error);
+        res.status(500).json({ error: 'Failed to fetch workflow templates' });
+      }
+    });
+
+    // Get active workflows for organization
+    app.get("/api/workflows/active", authenticate, authorize('tenant_admin', 'admin'), async (req, res) => {
+      try {
+        const workflows = await query(`
+          SELECT 
+            id,
+            workflow_name,
+            workflow_type,
+            n8n_workflow_id,
+            is_active,
+            is_custom,
+            template_id,
+            version,
+            config,
+            created_at,
+            updated_at
+          FROM organization_workflows
+          WHERE organization_id = $1
+          ORDER BY created_at DESC
+        `, [req.user.organization_id]);
+        
+        res.json(workflows.rows);
+      } catch (error) {
+        console.error('Get active workflows error:', error);
+        res.status(500).json({ error: 'Failed to fetch workflows' });
+      }
+    });
+
+    // Activate workflow template for tenant
+    app.post("/api/workflows/activate", authenticate, authorize('tenant_admin', 'admin'), async (req, res) => {
+      try {
+        const { template_id, workflow_name, config } = req.body;
+        
+        if (!template_id || !workflow_name) {
+          return res.status(400).json({ error: 'template_id and workflow_name are required' });
+        }
+
+        // For now, generate a placeholder n8n workflow ID (in production, call n8n API)
+        const n8nWorkflowId = `n8n-${template_id}-${Date.now()}`;
+        
+        // Check if workflow of this type already exists
+        const existing = await query(`
+          SELECT id FROM organization_workflows
+          WHERE organization_id = $1 AND workflow_type = 'application_submitted'
+        `, [req.user.organization_id]);
+
+        if (existing.rows.length > 0) {
+          return res.status(400).json({ error: 'A workflow for application_submitted already exists. Deactivate it first.' });
+        }
+
+        // Save to database
+        const result = await query(`
+          INSERT INTO organization_workflows 
+          (organization_id, workflow_name, workflow_type, n8n_workflow_id, template_id, config, is_active)
+          VALUES ($1, $2, 'application_submitted', $3, $4, $5, true)
+          RETURNING *
+        `, [req.user.organization_id, workflow_name, n8nWorkflowId, template_id, JSON.stringify(config || {})]);
+        
+        res.json({ success: true, workflow: result.rows[0] });
+      } catch (error) {
+        console.error('Activate workflow error:', error);
+        res.status(500).json({ error: 'Failed to activate workflow' });
+      }
+    });
+
+    // Deactivate workflow
+    app.delete("/api/workflows/:id", authenticate, authorize('tenant_admin', 'admin'), async (req, res) => {
+      try {
+        const { id } = req.params;
+        
+        await query(`
+          UPDATE organization_workflows
+          SET is_active = false, updated_at = NOW()
+          WHERE id = $1 AND organization_id = $2
+        `, [id, req.user.organization_id]);
+        
+        res.json({ success: true });
+      } catch (error) {
+        console.error('Deactivate workflow error:', error);
+        res.status(500).json({ error: 'Failed to deactivate workflow' });
+      }
+    });
+
+    // Get all integrations for organization
+    app.get("/api/integrations", authenticate, authorize('tenant_admin', 'admin'), async (req, res) => {
+      try {
+        const integrations = await query(`
+          SELECT 
+            id,
+            provider,
+            is_enabled,
+            endpoint_url,
+            settings,
+            created_at,
+            updated_at
+          FROM integration_configs
+          WHERE organization_id = $1
+          ORDER BY provider
+        `, [req.user.organization_id]);
+        
+        res.json(integrations.rows);
+      } catch (error) {
+        console.error('Get integrations error:', error);
+        res.status(500).json({ error: 'Failed to fetch integrations' });
+      }
+    });
+
+    // Create or update integration config
+    app.post("/api/integrations", authenticate, authorize('tenant_admin', 'admin'), async (req, res) => {
+      try {
+        const { provider, is_enabled, api_key, endpoint_url, settings } = req.body;
+        
+        if (!provider) {
+          return res.status(400).json({ error: 'provider is required' });
+        }
+
+        // Simple encryption (in production, use proper crypto library)
+        const api_key_encrypted = api_key ? Buffer.from(api_key).toString('base64') : null;
+
+        // Upsert
+        const result = await query(`
+          INSERT INTO integration_configs 
+          (organization_id, provider, is_enabled, api_key_encrypted, endpoint_url, settings)
+          VALUES ($1, $2, $3, $4, $5, $6)
+          ON CONFLICT (organization_id, provider)
+          DO UPDATE SET 
+            is_enabled = $3,
+            api_key_encrypted = COALESCE($4, integration_configs.api_key_encrypted),
+            endpoint_url = $5,
+            settings = $6,
+            updated_at = NOW()
+          RETURNING id, provider, is_enabled, endpoint_url, settings, created_at, updated_at
+        `, [req.user.organization_id, provider, is_enabled || false, api_key_encrypted, endpoint_url, JSON.stringify(settings || {})]);
+        
+        res.json(result.rows[0]);
+      } catch (error) {
+        console.error('Save integration error:', error);
+        res.status(500).json({ error: 'Failed to save integration' });
+      }
+    });
+
+    // Update integration config
+    app.put("/api/integrations/:provider", authenticate, authorize('tenant_admin', 'admin'), async (req, res) => {
+      try {
+        const { provider } = req.params;
+        const { is_enabled, api_key, endpoint_url, settings } = req.body;
+
+        const api_key_encrypted = api_key ? Buffer.from(api_key).toString('base64') : null;
+
+        const result = await query(`
+          UPDATE integration_configs
+          SET 
+            is_enabled = COALESCE($1, is_enabled),
+            api_key_encrypted = COALESCE($2, api_key_encrypted),
+            endpoint_url = COALESCE($3, endpoint_url),
+            settings = COALESCE($4, settings),
+            updated_at = NOW()
+          WHERE organization_id = $5 AND provider = $6
+          RETURNING id, provider, is_enabled, endpoint_url, settings, updated_at
+        `, [is_enabled, api_key_encrypted, endpoint_url, settings ? JSON.stringify(settings) : null, req.user.organization_id, provider]);
+        
+        if (result.rows.length === 0) {
+          return res.status(404).json({ error: 'Integration not found' });
+        }
+
+        res.json(result.rows[0]);
+      } catch (error) {
+        console.error('Update integration error:', error);
+        res.status(500).json({ error: 'Failed to update integration' });
+      }
+    });
+
+    // Delete integration config
+    app.delete("/api/integrations/:provider", authenticate, authorize('tenant_admin', 'admin'), async (req, res) => {
+      try {
+        const { provider } = req.params;
+        
+        await query(`
+          DELETE FROM integration_configs
+          WHERE organization_id = $1 AND provider = $2
+        `, [req.user.organization_id, provider]);
+        
+        res.json({ success: true });
+      } catch (error) {
+        console.error('Delete integration error:', error);
+        res.status(500).json({ error: 'Failed to delete integration' });
+      }
+    });
+    
+    // ========================================
+    // PHASE 5: DOCUMENT MANAGEMENT
+    // ========================================
+    
+    // Helper function to trigger n8n workflow
+    async function triggerN8nWorkflow(workflowName: string, data: any) {
+      try {
+        const n8nUrl = process.env.N8N_WEBHOOK_URL || 'http://n8n:5678';
+        const response = await fetch(`${n8nUrl}/webhook/${workflowName}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data)
+        });
+        
+        if (!response.ok) {
+          console.error(`n8n workflow ${workflowName} failed:`, await response.text());
+          return null;
+        }
+        
+        return await response.json();
+      } catch (error) {
+        console.error(`Failed to trigger n8n workflow ${workflowName}:`, error);
+        return null;
+      }
+    }
+    
+    // Upload document for application
+    app.post("/api/applications/:id/documents", authenticate, authorize('broker', 'admin', 'underwriter'), async (req: any, res) => {
+      try {
+        const { id: applicationId } = req.params;
+        const { document_type, file_name, file_data, mime_type } = req.body;
+        
+        // Expect base64 encoded file in request body
+        if (!file_data) {
+          return res.status(400).json({ error: 'file_data (base64 encoded) is required' });
+        }
+        
+        if (!file_name) {
+          return res.status(400).json({ error: 'file_name is required' });
+        }
+        
+        if (!mime_type) {
+          return res.status(400).json({ error: 'mime_type is required' });
+        }
+        
+        // Validate file type
+        const allowedMimes = [
+          'application/pdf',
+          'image/jpeg',
+          'image/jpg',
+          'image/png',
+          'image/tiff',
+          'application/msword',
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        ];
+        
+        if (!allowedMimes.includes(mime_type)) {
+          return res.status(400).json({ error: 'Invalid file type. Only PDF, images, and Word documents are allowed.' });
+        }
+        
+        if (!document_type) {
+          return res.status(400).json({ error: 'document_type is required' });
+        }
+        
+        // Verify application belongs to user's organization
+        const appCheck = await query(`
+          SELECT id FROM applications 
+          WHERE id = $1 AND organization_id = $2
+        `, [applicationId, req.user.organization_id]);
+        
+        if (appCheck.rows.length === 0) {
+          return res.status(404).json({ error: 'Application not found' });
+        }
+        
+        // Decode base64 file data
+        const fileBuffer = Buffer.from(file_data, 'base64');
+        const fileSize = fileBuffer.length;
+        
+        // Check file size (10MB limit)
+        if (fileSize > 10 * 1024 * 1024) {
+          return res.status(400).json({ error: 'File size exceeds 10MB limit' });
+        }
+        
+        // Generate unique filename
+        const fileExtension = file_name.split('.').pop();
+        const uniqueFilename = `${crypto.randomBytes(16).toString('hex')}.${fileExtension}`;
+        const storagePath = `applications/${applicationId}/documents/${uniqueFilename}`;
+        
+        // Upload to MinIO
+        await minioClient.putObject(
+          MINIO_BUCKET,
+          storagePath,
+          fileBuffer,
+          fileSize,
+          {
+            'Content-Type': mime_type,
+            'X-Original-Filename': file_name
+          }
+        );
+        
+        // Determine OCR status based on file type
+        const ocrApplicable = ['application/pdf', 'image/jpeg', 'image/jpg', 'image/png', 'image/tiff'].includes(mime_type);
+        const ocrStatus = ocrApplicable ? 'pending' : 'not_applicable';
+        
+        // Save document metadata to database
+        const docResult = await query(`
+          INSERT INTO application_documents 
+          (application_id, uploaded_by_user_id, document_type, file_name, file_size, 
+           mime_type, storage_path, ocr_status)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          RETURNING *
+        `, [
+          applicationId,
+          req.user.id,
+          document_type,
+          file_name,
+          fileSize,
+          mime_type,
+          storagePath,
+          ocrStatus
+        ]);
+        
+        const document = docResult.rows[0];
+        
+        // Trigger OCR workflow if applicable
+        if (ocrApplicable) {
+          triggerN8nWorkflow('document-ocr', {
+            document_id: document.id,
+            application_id: applicationId,
+            organization_id: req.user.organization_id,
+            document_type,
+            storage_path: storagePath,
+            mime_type
+          });
+        }
+        
+        res.json({
+          success: true,
+          document: {
+            ...document,
+            storage_path: undefined // Don't expose internal path
+          }
+        });
+      } catch (error: any) {
+        console.error('Document upload error:', error);
+        res.status(500).json({ error: error.message || 'Failed to upload document' });
+      }
+    });
+    
+    // Get documents for an application
+    app.get("/api/applications/:id/documents", authenticate, async (req, res) => {
+      try {
+        const { id: applicationId } = req.params;
+        
+        // Verify access
+        const appCheck = await query(`
+          SELECT id FROM applications 
+          WHERE id = $1 AND organization_id = $2
+        `, [applicationId, req.user.organization_id]);
+        
+        if (appCheck.rows.length === 0) {
+          return res.status(404).json({ error: 'Application not found' });
+        }
+        
+        // Get documents
+        const result = await query(`
+          SELECT 
+            d.id,
+            d.document_type,
+            d.file_name,
+            d.file_size,
+            d.mime_type,
+            d.ocr_status,
+            d.confidence_score,
+            d.is_verified,
+            d.verified_at,
+            d.created_at,
+            d.processed_at,
+            u.first_name || ' ' || u.last_name as uploaded_by,
+            v.first_name || ' ' || v.last_name as verified_by
+          FROM application_documents d
+          LEFT JOIN users u ON d.uploaded_by_user_id = u.id
+          LEFT JOIN users v ON d.verified_by_user_id = v.id
+          WHERE d.application_id = $1
+          ORDER BY d.created_at DESC
+        `, [applicationId]);
+        
+        res.json(result.rows);
+      } catch (error) {
+        console.error('Get documents error:', error);
+        res.status(500).json({ error: 'Failed to fetch documents' });
+      }
+    });
+    
+    // Get document download URL
+    app.get("/api/documents/:id/download", authenticate, async (req, res) => {
+      try {
+        const { id: documentId } = req.params;
+        
+        // Get document with org verification
+        const result = await query(`
+          SELECT d.*, a.organization_id
+          FROM application_documents d
+          JOIN applications a ON d.application_id = a.id
+          WHERE d.id = $1
+        `, [documentId]);
+        
+        if (result.rows.length === 0) {
+          return res.status(404).json({ error: 'Document not found' });
+        }
+        
+        const document = result.rows[0];
+        
+        // Verify user has access
+        if (document.organization_id !== req.user.organization_id) {
+          return res.status(403).json({ error: 'Access denied' });
+        }
+        
+        // Generate pre-signed URL (valid for 1 hour)
+        const downloadUrl = await minioClient.presignedGetObject(
+          MINIO_BUCKET,
+          document.storage_path,
+          60 * 60
+        );
+        
+        res.json({ 
+          downloadUrl,
+          fileName: document.file_name,
+          mimeType: document.mime_type
+        });
+      } catch (error) {
+        console.error('Get download URL error:', error);
+        res.status(500).json({ error: 'Failed to generate download URL' });
+      }
+    });
+    
+    // Get extracted OCR data
+    app.get("/api/documents/:id/extracted-data", authenticate, authorize('underwriter', 'admin'), async (req, res) => {
+      try {
+        const { id: documentId } = req.params;
+        
+        const result = await query(`
+          SELECT d.extracted_data, d.confidence_score, d.processed_at, d.ocr_status
+          FROM application_documents d
+          JOIN applications a ON d.application_id = a.id
+          WHERE d.id = $1 AND a.organization_id = $2
+        `, [documentId, req.user.organization_id]);
+        
+        if (result.rows.length === 0) {
+          return res.status(404).json({ error: 'Document not found' });
+        }
+        
+        const document = result.rows[0];
+        
+        if (document.ocr_status !== 'completed') {
+          return res.status(400).json({ 
+            error: 'OCR not completed', 
+            status: document.ocr_status 
+          });
+        }
+        
+        res.json({
+          extractedData: document.extracted_data,
+          confidenceScore: document.confidence_score,
+          processedAt: document.processed_at
+        });
+      } catch (error) {
+        console.error('Get extracted data error:', error);
+        res.status(500).json({ error: 'Failed to fetch extracted data' });
+      }
+    });
+    
+    // Verify document (Underwriter)
+    app.patch("/api/documents/:id/verify", authenticate, authorize('underwriter', 'admin'), async (req, res) => {
+      try {
+        const { id: documentId } = req.params;
+        const { is_verified, verification_notes } = req.body;
+        
+        const result = await query(`
+          UPDATE application_documents d
+          SET 
+            is_verified = $1,
+            verified_by_user_id = $2,
+            verified_at = NOW(),
+            verification_notes = $3
+          FROM applications a
+          WHERE d.application_id = a.id
+            AND d.id = $4
+            AND a.organization_id = $5
+          RETURNING d.*
+        `, [is_verified, req.user.id, verification_notes, documentId, req.user.organization_id]);
+        
+        if (result.rows.length === 0) {
+          return res.status(404).json({ error: 'Document not found' });
+        }
+        
+        res.json({ success: true, document: result.rows[0] });
+      } catch (error) {
+        console.error('Verify document error:', error);
+        res.status(500).json({ error: 'Failed to verify document' });
+      }
+    });
+    
+    // Delete document
+    app.delete("/api/documents/:id", authenticate, authorize('broker', 'admin'), async (req, res) => {
+      try {
+        const { id: documentId } = req.params;
+        
+        // Get document to delete from storage
+        const docResult = await query(`
+          SELECT d.storage_path, a.organization_id
+          FROM application_documents d
+          JOIN applications a ON d.application_id = a.id
+          WHERE d.id = $1
+        `, [documentId]);
+        
+        if (docResult.rows.length === 0) {
+          return res.status(404).json({ error: 'Document not found' });
+        }
+        
+        const document = docResult.rows[0];
+        
+        // Verify access
+        if (document.organization_id !== req.user.organization_id) {
+          return res.status(403).json({ error: 'Access denied' });
+        }
+        
+        // Delete from MinIO
+        try {
+          await minioClient.removeObject(MINIO_BUCKET, document.storage_path);
+        } catch (minioError) {
+          console.error('MinIO delete error:', minioError);
+          // Continue with DB deletion even if MinIO fails
+        }
+        
+        // Delete from database
+        await query(`DELETE FROM application_documents WHERE id = $1`, [documentId]);
+        
+        res.json({ success: true });
+      } catch (error) {
+        console.error('Delete document error:', error);
+        res.status(500).json({ error: 'Failed to delete document' });
+      }
+    });
+    
+    // Webhook receiver from n8n for OCR results
+    app.post("/api/webhooks/ocr-complete", async (req, res) => {
+      try {
+        const { document_id, extracted_data, confidence_score, status, error_message } = req.body;
+        
+        if (!document_id) {
+          return res.status(400).json({ error: 'document_id is required' });
+        }
+        
+        // Update document with OCR results
+        await query(`
+          UPDATE application_documents
+          SET 
+            ocr_status = $1,
+            extracted_data = $2,
+            confidence_score = $3,
+            processed_at = NOW(),
+            processing_error = $4
+          WHERE id = $5
+        `, [
+          status || 'completed',
+          extracted_data ? JSON.stringify(extracted_data) : null,
+          confidence_score,
+          error_message,
+          document_id
+        ]);
+        
+        res.json({ success: true });
+      } catch (error) {
+        console.error('OCR webhook error:', error);
+        res.status(500).json({ error: 'Failed to process OCR results' });
+      }
+    });
+
+    // ==================== TASKS API ====================
+    // Get tasks for an application
+    app.get('/api/applications/:id/tasks', authenticate, async (req: Request, res: Response) => {
+      try {
+        const { id } = req.params;
+        const userId = (req as any).session?.userId;
+
+        // Verify access to application
+        const appCheck = await query(
+          `SELECT id FROM applications WHERE id = $1 AND (
+            organization_id IN (SELECT organization_id FROM users WHERE id = $2) OR
+            created_by = $2
+          )`,
+          [id, userId]
+        );
+
+        if (appCheck.rows.length === 0) {
+          return res.status(404).json({ error: 'Application not found' });
+        }
+
+        const result = await query(
+          `SELECT * FROM application_tasks 
+           WHERE application_id = $1 
+           ORDER BY priority DESC, due_date ASC NULLS LAST, created_at DESC`,
+          [id]
+        );
+
+        res.json({ tasks: result.rows });
+      } catch (error) {
+        console.error('Error fetching tasks:', error);
+        res.status(500).json({ error: 'Failed to fetch tasks' });
+      }
+    });
+
+    // ==================== EXCEPTIONS API ====================
+    // Get exceptions for an application
+    app.get('/api/applications/:id/exceptions', authenticate, async (req: Request, res: Response) => {
+      try {
+        const { id } = req.params;
+        const userId = (req as any).session?.userId;
+
+        // Verify access to application
+        const appCheck = await query(
+          `SELECT id FROM applications WHERE id = $1 AND (
+            organization_id IN (SELECT organization_id FROM users WHERE id = $2) OR
+            created_by = $2
+          )`,
+          [id, userId]
+        );
+
+        if (appCheck.rows.length === 0) {
+          return res.status(404).json({ error: 'Application not found' });
+        }
+
+        const result = await query(
+          `SELECT * FROM application_exceptions 
+           WHERE application_id = $1 
+           ORDER BY resolved ASC, severity DESC, created_at DESC`,
+          [id]
+        );
+
+        res.json({ exceptions: result.rows });
+      } catch (error) {
+        console.error('Error fetching exceptions:', error);
+        res.status(500).json({ error: 'Failed to fetch exceptions' });
+      }
+    });
+    
+    // ============================================
+    // NOTIFICATION SYSTEM ENDPOINTS
+    // ============================================
+    
+    // Get notification settings for organization
+    app.get("/api/notifications/settings", authenticate, authorize('tenant_admin', 'admin'), async (req, res) => {
+      try {
+        const result = await query(
+          `SELECT * FROM notification_settings WHERE organization_id = $1`,
+          [req.user.organization_id]
+        );
+        
+        if (result.rows.length === 0) {
+          return res.json({
+            email_provider: 'sendgrid',
+            sms_provider: 'twilio',
+            is_email_enabled: false,
+            is_sms_enabled: false
+          });
+        }
+        
+        // Don't send encrypted keys to client
+        const settings = result.rows[0];
+        delete settings.email_api_key_encrypted;
+        delete settings.sms_api_key_encrypted;
+        
+        res.json(settings);
+      } catch (error) {
+        console.error('Get notification settings error:', error);
+        res.status(500).json({ error: 'Failed to fetch notification settings' });
+      }
+    });
+    
+    // Update notification settings
+    app.put("/api/notifications/settings", authenticate, authorize('tenant_admin', 'admin'), async (req, res) => {
+      try {
+        const {
+          email_provider,
+          email_api_key,
+          email_from_address,
+          email_from_name,
+          sms_provider,
+          sms_api_key,
+          sms_account_sid,
+          sms_from_number,
+          is_email_enabled,
+          is_sms_enabled
+        } = req.body;
+        
+        // Encrypt API keys if provided
+        let emailKeyEncrypted = null;
+        let smsKeyEncrypted = null;
+        
+        if (email_api_key) {
+          const key = crypto.scryptSync(config.get('SESSION_SECRET'), 'salt', 32);
+          const iv = Buffer.alloc(16, 0);
+          const cipher = crypto.createCipheriv('aes-256-cbc', key, iv);
+          emailKeyEncrypted = cipher.update(email_api_key, 'utf8', 'hex') + cipher.final('hex');
+        }
+        
+        if (sms_api_key) {
+          const key = crypto.scryptSync(config.get('SESSION_SECRET'), 'salt', 32);
+          const iv = Buffer.alloc(16, 0);
+          const cipher = crypto.createCipheriv('aes-256-cbc', key, iv);
+          smsKeyEncrypted = cipher.update(sms_api_key, 'utf8', 'hex') + cipher.final('hex');
+        }
+        
+        const result = await query(`
+          INSERT INTO notification_settings (
+            organization_id, email_provider, email_api_key_encrypted, 
+            email_from_address, email_from_name, sms_provider, 
+            sms_api_key_encrypted, sms_account_sid, sms_from_number,
+            is_email_enabled, is_sms_enabled
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+          ON CONFLICT (organization_id) DO UPDATE SET
+            email_provider = COALESCE($2, notification_settings.email_provider),
+            email_api_key_encrypted = COALESCE($3, notification_settings.email_api_key_encrypted),
+            email_from_address = COALESCE($4, notification_settings.email_from_address),
+            email_from_name = COALESCE($5, notification_settings.email_from_name),
+            sms_provider = COALESCE($6, notification_settings.sms_provider),
+            sms_api_key_encrypted = COALESCE($7, notification_settings.sms_api_key_encrypted),
+            sms_account_sid = COALESCE($8, notification_settings.sms_account_sid),
+            sms_from_number = COALESCE($9, notification_settings.sms_from_number),
+            is_email_enabled = COALESCE($10, notification_settings.is_email_enabled),
+            is_sms_enabled = COALESCE($11, notification_settings.is_sms_enabled),
+            updated_at = NOW()
+          RETURNING *
+        `, [
+          req.user.organization_id, email_provider, emailKeyEncrypted,
+          email_from_address, email_from_name, sms_provider,
+          smsKeyEncrypted, sms_account_sid, sms_from_number,
+          is_email_enabled, is_sms_enabled
+        ]);
+        
+        const settings = result.rows[0];
+        delete settings.email_api_key_encrypted;
+        delete settings.sms_api_key_encrypted;
+        
+        res.json({ success: true, settings });
+      } catch (error) {
+        console.error('Update notification settings error:', error);
+        res.status(500).json({ error: 'Failed to update notification settings' });
+      }
+    });
+    
+    // Get all notification templates
+    app.get("/api/notifications/templates", authenticate, authorize('tenant_admin', 'admin'), async (req, res) => {
+      try {
+        const result = await query(
+          `SELECT * FROM notification_templates 
+           WHERE organization_id = $1 
+           ORDER BY event_type, channel, recipient_role`,
+          [req.user.organization_id]
+        );
+        
+        res.json({ templates: result.rows });
+      } catch (error) {
+        console.error('Get notification templates error:', error);
+        res.status(500).json({ error: 'Failed to fetch notification templates' });
+      }
+    });
+    
+    // Create notification template
+    app.post("/api/notifications/templates", authenticate, authorize('tenant_admin', 'admin'), async (req, res) => {
+      try {
+        const {
+          event_type,
+          channel,
+          recipient_role,
+          subject,
+          body_template,
+          is_enabled
+        } = req.body;
+        
+        // Validate required fields
+        if (!event_type || !channel || !recipient_role || !body_template) {
+          return res.status(400).json({ error: 'Missing required fields' });
+        }
+        
+        const result = await query(`
+          INSERT INTO notification_templates (
+            organization_id, event_type, channel, recipient_role,
+            subject, body_template, is_enabled, created_by_user_id
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          RETURNING *
+        `, [
+          req.user.organization_id, event_type, channel, recipient_role,
+          subject, body_template, is_enabled !== false, req.user.id
+        ]);
+        
+        res.status(201).json({ success: true, template: result.rows[0] });
+      } catch (error) {
+        if (error.code === '23505') { // Unique constraint violation
+          return res.status(409).json({ error: 'Template already exists for this event/channel/role combination' });
+        }
+        console.error('Create notification template error:', error);
+        res.status(500).json({ error: 'Failed to create notification template' });
+      }
+    });
+    
+    // Update notification template
+    app.put("/api/notifications/templates/:id", authenticate, authorize('tenant_admin', 'admin'), async (req, res) => {
+      try {
+        const { id } = req.params;
+        const { subject, body_template, is_enabled } = req.body;
+        
+        const result = await query(`
+          UPDATE notification_templates
+          SET 
+            subject = COALESCE($1, subject),
+            body_template = COALESCE($2, body_template),
+            is_enabled = COALESCE($3, is_enabled),
+            updated_at = NOW()
+          WHERE id = $4 AND organization_id = $5
+          RETURNING *
+        `, [subject, body_template, is_enabled, id, req.user.organization_id]);
+        
+        if (result.rows.length === 0) {
+          return res.status(404).json({ error: 'Template not found' });
+        }
+        
+        res.json({ success: true, template: result.rows[0] });
+      } catch (error) {
+        console.error('Update notification template error:', error);
+        res.status(500).json({ error: 'Failed to update notification template' });
+      }
+    });
+    
+    // Delete notification template
+    app.delete("/api/notifications/templates/:id", authenticate, authorize('tenant_admin', 'admin'), async (req, res) => {
+      try {
+        const { id } = req.params;
+        
+        const result = await query(
+          `DELETE FROM notification_templates 
+           WHERE id = $1 AND organization_id = $2 
+           RETURNING id`,
+          [id, req.user.organization_id]
+        );
+        
+        if (result.rows.length === 0) {
+          return res.status(404).json({ error: 'Template not found' });
+        }
+        
+        res.json({ success: true });
+      } catch (error) {
+        console.error('Delete notification template error:', error);
+        res.status(500).json({ error: 'Failed to delete notification template' });
+      }
+    });
+    
+    // Get notification logs
+    app.get("/api/notifications/logs", authenticate, authorize('tenant_admin', 'admin'), async (req, res) => {
+      try {
+        const { application_id, status, limit = 100 } = req.query;
+        
+        let queryText = `
+          SELECT nl.*, a.application_number, u.first_name, u.last_name
+          FROM notification_logs nl
+          LEFT JOIN applications a ON nl.application_id = a.id
+          LEFT JOIN users u ON nl.recipient_user_id = u.id
+          WHERE nl.organization_id = $1
+        `;
+        const params: any[] = [req.user.organization_id];
+        
+        if (application_id) {
+          params.push(String(application_id));
+          queryText += ` AND nl.application_id = $${params.length}`;
+        }
+        
+        if (status) {
+          params.push(String(status));
+          queryText += ` AND nl.status = $${params.length}`;
+        }
+        
+        params.push(String(limit));
+        queryText += ` ORDER BY nl.created_at DESC LIMIT $${params.length}`;
+        
+        const result = await query(queryText, params);
+        res.json({ logs: result.rows });
+      } catch (error) {
+        console.error('Get notification logs error:', error);
+        res.status(500).json({ error: 'Failed to fetch notification logs' });
+      }
+    });
+    
+    // Trigger notification (called internally or via n8n webhook)
+    app.post("/api/notifications/trigger", authenticate, async (req, res) => {
+      try {
+        const { application_id, event_type, custom_data } = req.body;
+        
+        if (!application_id || !event_type) {
+          return res.status(400).json({ error: 'Missing required fields' });
+        }
+        
+        // Get application details
+        const appResult = await query(
+          `SELECT a.*, lp.name as product_name, 
+                  u1.email as broker_email, u1.first_name as broker_first_name, u1.last_name as broker_last_name,
+                  u2.email as underwriter_email, u2.first_name as underwriter_first_name, u2.last_name as underwriter_last_name
+           FROM applications a
+           LEFT JOIN loan_products lp ON a.loan_product_id = lp.id
+           LEFT JOIN users u1 ON a.assigned_broker_id = u1.id
+           LEFT JOIN users u2 ON a.assigned_underwriter_id = u2.id
+           WHERE a.id = $1 AND a.organization_id = $2`,
+          [application_id, req.user.organization_id]
+        );
+        
+        if (appResult.rows.length === 0) {
+          return res.status(404).json({ error: 'Application not found' });
+        }
+        
+        const application = appResult.rows[0];
+        
+        // Get enabled notification templates for this event
+        const templatesResult = await query(
+          `SELECT * FROM notification_templates
+           WHERE organization_id = $1 AND event_type = $2 AND is_enabled = true`,
+          [req.user.organization_id, event_type]
+        );
+        
+        if (templatesResult.rows.length === 0) {
+          return res.json({ success: true, message: 'No templates configured for this event', triggered: 0 });
+        }
+        
+        // Prepare notification data for n8n
+        const notificationData = {
+          application_id,
+          application_number: application.application_number,
+          event_type,
+          organization_id: req.user.organization_id,
+          templates: templatesResult.rows,
+          application_data: {
+            applicant_name: application.applicant_data?.personal_info?.full_name || 'N/A',
+            loan_amount: application.loan_amount,
+            status: application.status,
+            product_name: application.product_name,
+            broker_email: application.broker_email,
+            broker_name: `${application.broker_first_name || ''} ${application.broker_last_name || ''}`.trim(),
+            underwriter_email: application.underwriter_email,
+            underwriter_name: `${application.underwriter_first_name || ''} ${application.underwriter_last_name || ''}`.trim(),
+            ...custom_data
+          }
+        };
+        
+        // Trigger n8n notification workflow
+        const n8nWebhookUrl = process.env.N8N_WEBHOOK_URL || 'http://n8n:5678/webhook/notification';
+        
+        try {
+          const n8nResponse = await fetch(n8nWebhookUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(notificationData)
+          });
+          
+          if (!n8nResponse.ok) {
+            console.error('n8n webhook failed:', await n8nResponse.text());
+          }
+        } catch (n8nError) {
+          console.error('n8n webhook error:', n8nError);
+          // Continue execution even if n8n is unavailable
+        }
+        
+        res.json({ 
+          success: true, 
+          message: 'Notification triggered', 
+          triggered: templatesResult.rows.length 
+        });
+      } catch (error) {
+        console.error('Trigger notification error:', error);
+        res.status(500).json({ error: 'Failed to trigger notification' });
+      }
+    });
+    
+    // Webhook receiver from n8n (to log sent notifications)
+    app.post("/api/webhooks/notification-sent", async (req, res) => {
+      try {
+        const {
+          organization_id,
+          application_id,
+          template_id,
+          event_type,
+          channel,
+          recipient_email,
+          recipient_phone,
+          recipient_user_id,
+          subject,
+          body,
+          status,
+          error_message,
+          external_message_id
+        } = req.body;
+        
+        await query(`
+          INSERT INTO notification_logs (
+            organization_id, application_id, template_id, event_type, channel,
+            recipient_email, recipient_phone, recipient_user_id, subject, body,
+            status, error_message, external_message_id, sent_at
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW())
+        `, [
+          organization_id, application_id, template_id, event_type, channel,
+          recipient_email, recipient_phone, recipient_user_id, subject, body,
+          status, error_message, external_message_id
+        ]);
+        
+        res.json({ success: true });
+      } catch (error) {
+        console.error('Notification webhook error:', error);
+        res.status(500).json({ error: 'Failed to log notification' });
+      }
+    });
     
     // Start server
     const PORT = config.get('PORT');
